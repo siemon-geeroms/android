@@ -1,5 +1,6 @@
 package io.homeassistant.companion.android.tiles
 
+import android.content.Context
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders
 import androidx.wear.protolayout.DimensionBuilders
@@ -42,13 +43,6 @@ import timber.log.Timber
 
 @AndroidEntryPoint
 class ThermostatTile : TileService() {
-
-    companion object {
-        private const val TAG = "ThermostatTile"
-        const val DEFAULT_REFRESH_INTERVAL = 600L
-        const val TAP_ACTION_UP = "Up"
-        const val TAP_ACTION_DOWN = "Down"
-    }
 
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -140,10 +134,19 @@ class ThermostatTile : TileService() {
                             thermostatTileDao.add(updated)
                         }
 
+                        if (lastId == TAP_ACTION_TOGGLE) {
+                            serverManager.integrationRepository().callAction(
+                                entity.domain,
+                                if (entity.rawState == "off") "turn_on" else "turn_off",
+                                hashMapOf("entity_id" to entity.entityId),
+                            )
+                        }
+
                         val name = if (tileConfig.showEntityName == true) entity.name else ""
 
                         tile.setTileTimeline(
                             timeline(
+                                this@ThermostatTile,
                                 tileConfig,
                                 entity,
                                 name,
@@ -184,6 +187,15 @@ class ThermostatTile : TileService() {
                                 .build(),
                         ).build(),
                 )
+                .addIdToImageMapping(
+                    RESOURCE_POWER,
+                    ResourceBuilders.ImageResource.Builder()
+                        .setAndroidResourceByResId(
+                            ResourceBuilders.AndroidImageResourceByResId.Builder()
+                                .setResourceId(R.drawable.ic_power)
+                                .build(),
+                        ).build(),
+                )
                 .build()
         }
 
@@ -206,145 +218,181 @@ class ThermostatTile : TileService() {
         serviceScope.cancel()
     }
 
-    private fun timeline(
-        tileConfig: ThermostatTile,
-        entity: EntityDisplay,
-        entityName: String,
-        targetTemperature: Float?,
-        temperatureUnit: String,
-    ): Timeline = Timeline.fromLayoutElement(
-        LayoutElementBuilders.Box.Builder().apply {
-            val currentTemperature = entity.climateControls?.currentTemperature
-            val hvacAction = entity.climateControls?.hvacAction.toString()
+    companion object {
+        private const val TAG = "ThermostatTile"
+        const val DEFAULT_REFRESH_INTERVAL = 600L
+        const val TAP_ACTION_UP = "Up"
+        const val TAP_ACTION_DOWN = "Down"
+        const val TAP_ACTION_TOGGLE = "Toggle"
+        internal const val RESOURCE_POWER = "power"
 
-            val hvacActionColor = when (hvacAction) {
-                "heating" -> getColor(commonR.color.colorDeviceControlsThermostatHeat)
-                "cooling" -> getColor(commonR.color.colorDeviceControlsDefaultOn)
-                else -> 0x00000000
-            }
+        internal fun timeline(
+            context: Context,
+            tileConfig: ThermostatTile,
+            entity: EntityDisplay,
+            entityName: String,
+            targetTemperature: Float?,
+            temperatureUnit: String,
+        ): Timeline = Timeline.fromLayoutElement(
+            LayoutElementBuilders.Box.Builder().apply {
+                val currentTemperature = entity.climateControls?.currentTemperature
+                val hvacAction = entity.climateControls?.hvacAction.toString()
+                val buttonsEnabled = hvacAction != "off" && entity.rawState != "unavailable"
 
-            val friendlyHvacAction = when (hvacAction) {
-                "heating" -> getString(commonR.string.climate_heating)
-                "cooling" -> getString(commonR.string.climate_cooling)
-                "idle" -> getString(commonR.string.state_idle)
-                "off" -> getString(commonR.string.state_off)
-                else -> hvacAction.replaceFirstChar { it.uppercase() }
-            }
+                val hvacActionColor = when (hvacAction) {
+                    "heating" -> context.getColor(commonR.color.colorDeviceControlsThermostatHeat)
+                    "cooling" -> context.getColor(commonR.color.colorDeviceControlsDefaultOn)
+                    else -> 0x00000000
+                }
 
-            addContent(
-                LayoutElementBuilders.Column.Builder()
-                    .addContent(
-                        LayoutElementBuilders.Text.Builder()
-                            .setText(friendlyHvacAction)
-                            .build(),
-                    )
-                    .addContent(
-                        LayoutElementBuilders.Text.Builder()
-                            .setText(
-                                if (targetTemperature ==
-                                    null
-                                ) {
-                                    "-- $temperatureUnit"
-                                } else {
-                                    "$targetTemperature $temperatureUnit"
-                                },
-                            )
-                            .setFontStyle(
-                                LayoutElementBuilders.FontStyle.Builder().setSize(
-                                    DimensionBuilders.sp(30f),
-                                ).build(),
-                            )
-                            .build(),
-                    )
-                    .addContent(
-                        LayoutElementBuilders.Text.Builder()
-                            .setText(
-                                if (currentTemperature ==
-                                    null
-                                ) {
-                                    "-- $temperatureUnit"
-                                } else {
-                                    "$currentTemperature $temperatureUnit"
-                                },
-                            )
-                            .build(),
-                    )
-                    .addContent(
-                        LayoutElementBuilders.Spacer.Builder()
-                            .setHeight(DimensionBuilders.dp(10f)).build(),
-                    )
-                    .addContent(
-                        LayoutElementBuilders.Row.Builder()
-                            .addContent(
-                                getTempButton(hvacAction != "off" && entity.rawState != "unavailable", TAP_ACTION_DOWN),
-                            )
-                            .addContent(
-                                LayoutElementBuilders.Spacer.Builder()
-                                    .setWidth(DimensionBuilders.dp(20f)).build(),
-                            )
-                            .addContent(
-                                getTempButton(hvacAction != "off" && entity.rawState != "unavailable", TAP_ACTION_UP),
-                            )
-                            .build(),
-                    )
-                    .build(),
-            )
-            addContent(
-                LayoutElementBuilders.Arc.Builder()
-                    .addContent(
-                        LayoutElementBuilders.ArcLine.Builder()
-                            .setLength(DimensionBuilders.DegreesProp.Builder(360f).build())
-                            .setThickness(DimensionBuilders.DpProp.Builder(2f).build())
-                            .setColor(ColorBuilders.argb(hvacActionColor))
-                            .build(),
-                    )
-                    .build(),
-            )
-            if (tileConfig.showEntityName == true) {
+                val friendlyHvacAction = when (hvacAction) {
+                    "heating" -> context.getString(commonR.string.climate_heating)
+                    "cooling" -> context.getString(commonR.string.climate_cooling)
+                    "idle" -> context.getString(commonR.string.state_idle)
+                    "off" -> context.getString(commonR.string.state_off)
+                    else -> hvacAction.replaceFirstChar { it.uppercase() }
+                }
+
                 addContent(
-                    LayoutElementBuilders.Arc.Builder()
-                        .setAnchorAngle(
-                            DimensionBuilders.DegreesProp.Builder(180f).build(),
-                        )
-                        .setAnchorType(LayoutElementBuilders.ARC_ANCHOR_CENTER)
+                    LayoutElementBuilders.Column.Builder()
                         .addContent(
-                            LayoutElementBuilders.ArcLine.Builder()
-                                .setLength(DimensionBuilders.DegreesProp.Builder(360f).build())
-                                .setThickness(DimensionBuilders.DpProp.Builder(30f).build())
-                                .setColor(ColorBuilders.argb(0x00000000)) // Fully transparent
+                            LayoutElementBuilders.Text.Builder()
+                                .setText(friendlyHvacAction)
                                 .build(),
                         )
                         .addContent(
-                            LayoutElementBuilders.ArcText.Builder()
-                                .setText(entityName)
+                            LayoutElementBuilders.Text.Builder()
+                                .setText(
+                                    if (targetTemperature == null) {
+                                        "-- $temperatureUnit"
+                                    } else {
+                                        "$targetTemperature $temperatureUnit"
+                                    },
+                                )
+                                .setFontStyle(
+                                    LayoutElementBuilders.FontStyle.Builder().setSize(
+                                        DimensionBuilders.sp(30f),
+                                    ).build(),
+                                )
+                                .build(),
+                        )
+                        .addContent(
+                            LayoutElementBuilders.Text.Builder()
+                                .setText(
+                                    if (currentTemperature == null) {
+                                        "-- $temperatureUnit"
+                                    } else {
+                                        "$currentTemperature $temperatureUnit"
+                                    },
+                                )
+                                .build(),
+                        )
+                        .addContent(
+                            LayoutElementBuilders.Spacer.Builder()
+                                .setHeight(DimensionBuilders.dp(10f)).build(),
+                        )
+                        .addContent(
+                            LayoutElementBuilders.Row.Builder()
+                                .addContent(getTempButton(context, buttonsEnabled, TAP_ACTION_DOWN))
+                                .addContent(
+                                    LayoutElementBuilders.Spacer.Builder()
+                                        .setWidth(DimensionBuilders.dp(10f)).build(),
+                                )
+                                .addContent(getPowerButton(context, entity.rawState != "unavailable"))
+                                .addContent(
+                                    LayoutElementBuilders.Spacer.Builder()
+                                        .setWidth(DimensionBuilders.dp(10f)).build(),
+                                )
+                                .addContent(getTempButton(context, buttonsEnabled, TAP_ACTION_UP))
                                 .build(),
                         )
                         .build(),
                 )
-            }
-            // Refresh button
-            addContent(getRefreshButton())
-            setModifiers(getRefreshModifiers())
-        }.build(),
-    )
+                addContent(
+                    LayoutElementBuilders.Arc.Builder()
+                        .addContent(
+                            LayoutElementBuilders.ArcLine.Builder()
+                                .setLength(DimensionBuilders.DegreesProp.Builder(360f).build())
+                                .setThickness(DimensionBuilders.DpProp.Builder(2f).build())
+                                .setColor(ColorBuilders.argb(hvacActionColor))
+                                .build(),
+                        )
+                        .build(),
+                )
+                if (tileConfig.showEntityName == true) {
+                    addContent(
+                        LayoutElementBuilders.Arc.Builder()
+                            .setAnchorAngle(
+                                DimensionBuilders.DegreesProp.Builder(180f).build(),
+                            )
+                            .setAnchorType(LayoutElementBuilders.ARC_ANCHOR_CENTER)
+                            .addContent(
+                                LayoutElementBuilders.ArcLine.Builder()
+                                    .setLength(DimensionBuilders.DegreesProp.Builder(360f).build())
+                                    .setThickness(DimensionBuilders.DpProp.Builder(30f).build())
+                                    .setColor(ColorBuilders.argb(0x00000000)) // Fully transparent
+                                    .build(),
+                            )
+                            .addContent(
+                                LayoutElementBuilders.ArcText.Builder()
+                                    .setText(entityName)
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                }
+                // Refresh button
+                addContent(getRefreshButton())
+                setModifiers(getRefreshModifiers())
+            }.build(),
+        )
 
-    private fun getTempButton(enabled: Boolean, action: String): LayoutElement {
-        val clickable = Clickable.Builder()
-        if (enabled) {
-            clickable.setOnClick(ActionBuilders.LoadAction.Builder().build())
-                .setId(action)
+        private fun getTempButton(context: Context, enabled: Boolean, action: String): LayoutElement {
+            val clickable = Clickable.Builder()
+            if (enabled) {
+                clickable.setOnClick(ActionBuilders.LoadAction.Builder().build())
+                    .setId(action)
+            }
+
+            return Button.Builder(context, clickable.build())
+                .setTextContent(if (action == TAP_ACTION_DOWN) "—" else "+")
+                .setButtonColors(
+                    ButtonColors(
+                        ColorBuilders.argb(
+                            context.getColor(
+                                if (enabled) commonR.color.colorPrimary else commonR.color.colorDeviceControlsOff,
+                            ),
+                        ),
+                        ColorBuilders.argb(context.getColor(commonR.color.colorWidgetButtonLabelBlack)),
+                    ),
+                )
+                .build()
         }
 
-        return Button.Builder(this, clickable.build())
-            .setTextContent(if (action == TAP_ACTION_DOWN) "—" else "+")
-            .setButtonColors(
-                ButtonColors(
-                    ColorBuilders.argb(
-                        getColor(if (enabled) commonR.color.colorPrimary else commonR.color.colorDeviceControlsOff),
+        private fun getPowerButton(context: Context, enabled: Boolean): LayoutElement {
+            val clickable = Clickable.Builder()
+            if (enabled) {
+                clickable.setOnClick(ActionBuilders.LoadAction.Builder().build())
+                    .setId(TAP_ACTION_TOGGLE)
+            }
+
+            return Button.Builder(context, clickable.build())
+                .setIconContent(RESOURCE_POWER)
+                .setButtonColors(
+                    ButtonColors(
+                        ColorBuilders.argb(
+                            context.getColor(
+                                if (enabled) {
+                                    commonR.color.colorDeviceControlsThermostatHeat
+                                } else {
+                                    commonR.color.colorDeviceControlsOff
+                                },
+                            ),
+                        ),
+                        ColorBuilders.argb(context.getColor(commonR.color.colorWidgetButtonLabelBlack)),
                     ),
-                    ColorBuilders.argb(getColor(commonR.color.colorWidgetButtonLabelBlack)),
-                ),
-            )
-            .build()
+                )
+                .build()
+        }
     }
 }
